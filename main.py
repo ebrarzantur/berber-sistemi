@@ -2,7 +2,8 @@ from fastapi import FastAPI, Request, Response, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-import sqlite3
+import os
+import psycopg2
 from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
@@ -14,11 +15,15 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+def get_db_connection():
+    database_url = os.environ.get("DATABASE_URL")
+    return psycopg2.connect(database_url)
+
 # Belirli bir berberin kendi mail ayarlarını veritabanından çekip mail gönderen fonksiyon
 def berber_mail_gonder(berber_id, alici_mail, konu, icerik):
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = ?", (berber_id,))
+    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = %s", (berber_id,))
     eposta_ayar = cursor.fetchone()
     baglanti.close()
 
@@ -45,12 +50,12 @@ def berber_mail_gonder(berber_id, alici_mail, konu, icerik):
         print("Mail Gönderilemedi:", e)
 
 def veritabani_kur():
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS randevular (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             isim TEXT NOT NULL,
             telefon TEXT NOT NULL,
             email TEXT,
@@ -62,37 +67,24 @@ def veritabani_kur():
             durum TEXT DEFAULT 'Aktif'
         )
     """)
-    try:
-        cursor.execute("ALTER TABLE randevular ADD COLUMN durum TEXT DEFAULT 'Aktif'")
-        cursor.execute("ALTER TABLE randevular ADD COLUMN email TEXT DEFAULT ''")
-        cursor.execute("ALTER TABLE randevular ADD COLUMN notlar TEXT DEFAULT ''")
-        cursor.execute("ALTER TABLE randevular ADD COLUMN berber_id INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        pass
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS hizmetler (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             ad TEXT NOT NULL,
             fiyat TEXT NOT NULL,
             aciklama TEXT
         )
     """)
-    try:
-        cursor.execute("ALTER TABLE hizmetler ADD COLUMN fiyat TEXT DEFAULT '0 TL'")
-        cursor.execute("ALTER TABLE hizmetler ADD COLUMN aciklama TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS site_ayarlari (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             ana_soz TEXT,
             hero_resim TEXT
         )
     """)
 
-    # Her berberin kendi mail adresini tutacak tablo (berber_id'ye özel)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS eposta_ayarlari (
             berber_id INTEGER PRIMARY KEY,
@@ -103,7 +95,7 @@ def veritabani_kur():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS berberler (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             isim TEXT NOT NULL,
             sifre TEXT NOT NULL
         )
@@ -111,7 +103,7 @@ def veritabani_kur():
 
     cursor.execute("SELECT COUNT(*) FROM berberler")
     if cursor.fetchone()[0] == 0:
-        varsayilan_berberler = [
+        varsayilanberberler = [
             (1, "Usta Ahmet", "4242"),
             (2, "Berber Mehmet", "4242"),
             (3, "Stylist Can", "4242"),
@@ -123,19 +115,18 @@ def veritabani_kur():
             (9, "Berber Onur", "4242"),
             (10, "Uzman Selim", "4242")
         ]
-        cursor.executemany("INSERT INTO berberler (id, isim, sifre) VALUES (?, ?, ?)", varsayilan_berberler)
+        cursor.executemany("INSERT INTO berberler (id, isim, sifre) VALUES (%s, %s, %s)", varsayilanberberler)
 
-    # 1'den 10'a kadar berberler için boş e-posta kayıtları açalım
     for i in range(1, 11):
-        cursor.execute("SELECT COUNT(*) FROM eposta_ayarlari WHERE berber_id = ?", (i,))
+        cursor.execute("SELECT COUNT(*) FROM eposta_ayarlari WHERE berber_id = %s", (i,))
         if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO eposta_ayarlari (berber_id, gonderen_mail, gonderen_sifre) VALUES (?, ?, ?)", (i, "", ""))
+            cursor.execute("INSERT INTO eposta_ayarlari (berber_id, gonderen_mail, gonderen_sifre) VALUES (%s, %s, %s)", (i, "", ""))
 
     cursor.execute("SELECT COUNT(*) FROM site_ayarlari")
     if cursor.fetchone()[0] == 0:
         cursor.execute("""
             INSERT INTO site_ayarlari (id, ana_soz, hero_resim) 
-            VALUES (1, ?, ?)
+            VALUES (1, %s, %s)
         """, ("Tarzınızı Yeniden Keşfedin", "https://images.unsplash.com/photo-1503951914875-452162b0f3f1?auto=format&fit=crop&w=1350&q=80"))
 
     cursor.execute("SELECT COUNT(*) FROM hizmetler")
@@ -145,7 +136,7 @@ def veritabani_kur():
             ("Sakal Tasarımı", "250 TL", "Sakal şekillendirme ve sıcak havlu kompresi"),
             ("VIP Cilt Bakımı", "400 TL", "Cildinizi canlandıran siyah nokta temizliği")
         ]
-        cursor.executemany("INSERT INTO hizmetler (ad, fiyat, aciklama) VALUES (?, ?, ?)", varsayilanlar)
+        cursor.executemany("INSERT INTO hizmetler (ad, fiyat, aciklama) VALUES (%s, %s, %s)", varsayilanlar)
 
     baglanti.commit()
     baglanti.close()
@@ -158,15 +149,15 @@ def saat_dakikaya_cevir(saat_str):
 
 def eski_randevulari_temizle():
     bugun_str = datetime.now().strftime("%Y-%m-%d")
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("DELETE FROM randevular WHERE tarih < ?", (bugun_str,))
+    cursor.execute("DELETE FROM randevular WHERE tarih < %s", (bugun_str,))
     baglanti.commit()
     baglanti.close()
 
 @app.get("/", response_class=HTMLResponse)
 async def ana_sayfa(request: Request, mesaj: Optional[str] = None):
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
     
     cursor.execute("SELECT ad FROM hizmetler")
@@ -209,14 +200,14 @@ async def randevu_kaydet(request: Request):
     except Exception:
         return RedirectResponse(url="/?mesaj=Form+okuma+hatasi!", status_code=303)
 
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
 
     if not ("08:00" <= saat <= "22:00"):
         baglanti.close()
         return RedirectResponse(url="/?mesaj=Hata:+Randevular+yalnizca+08:00+ile+22:00+arasinda+alinabilir!", status_code=303)
 
-    cursor.execute("SELECT saat FROM randevular WHERE berber_id = ? AND tarih = ? AND durum = 'Aktif'", (berber_id, tarih))
+    cursor.execute("SELECT saat FROM randevular WHERE berber_id = %s AND tarih = %s AND durum = 'Aktif'", (berber_id, tarih))
     mevcut_randevular = cursor.fetchall()
     
     yeni_dakika = saat_dakikaya_cevir(saat)
@@ -228,23 +219,22 @@ async def randevu_kaydet(request: Request):
 
     cursor.execute("""
         INSERT INTO randevular (isim, telefon, email, hizmet, berber_id, tarih, saat, notlar, durum) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Aktif')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Aktif')
     """, (isim, telefon, email, hizmet, berber_id, tarih, saat, notlar))
     baglanti.commit()
 
-    cursor.execute("SELECT isim FROM berberler WHERE id = ?", (berber_id,))
+    cursor.execute("SELECT isim FROM berberler WHERE id = %s", (berber_id,))
     berber_bilgi = cursor.fetchone()
     berber_adi = berber_bilgi[0] if berber_bilgi else "Berber"
 
     baglanti.close()
 
-    # Müşteriye randevu onayı maili gönder (Seçilen berberin mail adresinden gider)
     if email:
         berber_mail_gonder(berber_id, email, "Randevu Onayı - Brothers Barber", f"Merhaba {isim},<br>{tarih} saat {saat} için <b>{berber_adi}</b> eşliğinde <b>{hizmet}</b> randevunuz oluşturulmuştur.")
-        # Ustaya (berbere) yeni randevu bildirim maili gönder
-    baglanti_usta = sqlite3.connect("berber.db")
+        
+    baglanti_usta = get_db_connection()
     cursor_usta = baglanti_usta.cursor()
-    cursor_usta.execute("SELECT gonderen_mail FROM eposta_ayarlari WHERE berber_id = ?", (berber_id,))
+    cursor_usta.execute("SELECT gonderen_mail FROM eposta_ayarlari WHERE berber_id = %s", (berber_id,))
     berber_posta = cursor_usta.fetchone()
     baglanti_usta.close()
     
@@ -254,7 +244,7 @@ async def randevu_kaydet(request: Request):
         <p><b>Müşteri Adı:</b> {isim}</p>
         <p><b>Telefon:</b> {telefon}</p>
         <p><b>Hizmet:</b> {hizmet}</p>
-        <p><b>Tarih / Saat:</b> {tarih} - {saat}</p>
+        <p><b>Tarih / Saat:</b> {tarih} {saat}</p>
         """
         berber_mail_gonder(berber_id, berber_posta[0], f"Yeni Randevu: {isim} ({tarih} {saat})", usta_mail_icerik)
 
@@ -262,13 +252,13 @@ async def randevu_kaydet(request: Request):
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_giris_sayfasi(request: Request, hata: Optional[str] = None):
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
     cursor.execute("SELECT id, isim FROM berberler")
     berberler = cursor.fetchall()
     baglanti.close()
 
-    secenekler_html = "".join([f'<option value="{b[0]}">Personel #{b[0]} - {b[1]}</option>' for b in berberler])
+    secenekler_html = "".join([f'<option value="{b[0]}">Personel #{b[0]} {b[1]}</option>' for b in berberler])
     hata_mesaji = '<p style="color: #e74c3c; text-align: center; margin-bottom: 15px; font-size: 13px;">Hatalı Şifre!</p>' if hata else ''
     
     return HTMLResponse(content=f"""
@@ -307,9 +297,9 @@ async def admin_giris_sayfasi(request: Request, hata: Optional[str] = None):
 
 @app.get("/admin/giris")
 async def admin_giris_kontrol(berber_id: str = "1", sifre: str = ""):
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("SELECT sifre FROM berberler WHERE id = ?", (berber_id,))
+    cursor.execute("SELECT sifre FROM berberler WHERE id = %s", (berber_id,))
     kayit = cursor.fetchone()
     baglanti.close()
 
@@ -330,17 +320,17 @@ async def admin_paneli(request: Request, admin_giris: Optional[str] = Cookie(def
 
     eski_randevulari_temizle()
 
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
 
-    cursor.execute("SELECT id, isim FROM berberler WHERE id = ?", (aktif_berber_id,))
+    cursor.execute("SELECT id, isim FROM berberler WHERE id = %s", (aktif_berber_id,))
     aktif_berber = cursor.fetchone()
     berber_adi = aktif_berber[1] if aktif_berber else f"Personel #{aktif_berber_id}"
 
     cursor.execute("SELECT id, isim FROM berberler")
     tum_berberler = cursor.fetchall()
     
-    cursor.execute("SELECT id, isim, telefon, email, hizmet, tarih, saat, notlar, durum FROM randevular WHERE berber_id = ? ORDER BY tarih DESC, saat DESC", (aktif_berber_id,))
+    cursor.execute("SELECT id, isim, telefon, email, hizmet, tarih, saat, notlar, durum FROM randevular WHERE berber_id = %s ORDER BY tarih DESC, saat DESC", (aktif_berber_id,))
     randevular = cursor.fetchall()
     
     cursor.execute("SELECT id, ad, fiyat, aciklama FROM hizmetler")
@@ -349,11 +339,10 @@ async def admin_paneli(request: Request, admin_giris: Optional[str] = Cookie(def
     cursor.execute("SELECT ana_soz, hero_resim FROM site_ayarlari WHERE id = 1")
     ayar = cursor.fetchone()
 
-    # Giriş yapan berberin kendi e-posta ayarlarını çek
-    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = ?", (aktif_berber_id,))
+    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = %s", (aktif_berber_id,))
     ep_ayar = cursor.fetchone()
 
-    cursor.execute("SELECT COUNT(*) FROM randevular WHERE berber_id = ? AND durum = 'Aktif'", (aktif_berber_id,))
+    cursor.execute("SELECT COUNT(*) FROM randevular WHERE berber_id = %s AND durum = 'Aktif'", (aktif_berber_id,))
     aktif_sonuc = cursor.fetchone()
     aktif_randevu_sayisi = aktif_sonuc[0] if aktif_sonuc else 0
 
@@ -516,7 +505,7 @@ async def admin_paneli(request: Request, admin_giris: Optional[str] = Cookie(def
                 <td>{h[1]}</td>
                 <td><strong style="color:#d4af37;">{h[2]}</strong></td>
                 <td>{h[3]}</td>
-                <td><a href="/admin/hizmet-sil/{h[0]}" class="btn-sil" onclick="return confirm('Kaldırılsın mı?');">Kaldır</a></td>
+                <td><a href="/admin/hizmet-sil/{h[0]}" class="btn-sil" onclick="return confirm(\'Kaldırılsın mı?\');">Kaldır</a></td>
             </tr>
         """
 
@@ -546,9 +535,9 @@ async def profil_guncelle(request: Request):
     if request.cookies.get("admin_giris") != "aktif":
         return RedirectResponse(url="/admin", status_code=303)
 
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("UPDATE berberler SET isim = ?, sifre = ? WHERE id = ?", (yeni_isim, yeni_sifre, aktif_berber_id))
+    cursor.execute("UPDATE berberler SET isim = %s, sifre = %s WHERE id = %s", (yeni_isim, yeni_sifre, aktif_berber_id))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -566,9 +555,9 @@ async def eposta_ayar_guncelle(request: Request):
     if request.cookies.get("admin_giris") != "aktif":
         return RedirectResponse(url="/admin", status_code=303)
 
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("UPDATE eposta_ayarlari SET gonderen_mail = ?, gonderen_sifre = ? WHERE berber_id = ?", (gonderen_mail, gonderen_sifre, aktif_berber_id))
+    cursor.execute("UPDATE eposta_ayarlari SET gonderen_mail = %s, gonderen_sifre = %s WHERE berber_id = %s", (gonderen_mail, gonderen_sifre, aktif_berber_id))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -585,10 +574,10 @@ async def site_ayar_guncelle(request: Request):
     if request.cookies.get("admin_giris") != "aktif":
         return RedirectResponse(url="/admin", status_code=303)
 
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
     cursor.execute("DELETE FROM site_ayarlari")
-    cursor.execute("INSERT INTO site_ayarlari (id, ana_soz, hero_resim) VALUES (1, ?, ?)", (ana_soz, hero_resim))
+    cursor.execute("INSERT INTO site_ayarlari (id, ana_soz, hero_resim) VALUES (1, %s, %s)", (ana_soz, hero_resim))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -606,9 +595,9 @@ async def hizmet_ekle(request: Request):
     if request.cookies.get("admin_giris") != "aktif":
         return RedirectResponse(url="/admin", status_code=303)
 
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("INSERT INTO hizmetler (ad, fiyat, aciklama) VALUES (?, ?, ?)", (hizmet_adi, fiyat, aciklama))
+    cursor.execute("INSERT INTO hizmetler (ad, fiyat, aciklama) VALUES (%s, %s, %s)", (hizmet_adi, fiyat, aciklama))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -617,9 +606,9 @@ async def hizmet_ekle(request: Request):
 async def hizmet_sil(hizmet_id: int, request: Request):
     if request.cookies.get("admin_giris") != "aktif":
         return RedirectResponse(url="/admin", status_code=303)
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("DELETE FROM hizmetler WHERE id = ?", (hizmet_id,))
+    cursor.execute("DELETE FROM hizmetler WHERE id = %s", (hizmet_id,))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -630,14 +619,14 @@ async def randevu_iptal(randevu_id: int, request: Request):
         return RedirectResponse(url="/admin", status_code=303)
         
     aktif_berber_id = request.cookies.get("aktif_berber_id", "1")
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("SELECT isim, email, hizmet, tarih, saat FROM randevular WHERE id = ?", (randevu_id,))
+    cursor.execute("SELECT isim, email, hizmet, tarih, saat FROM randevular WHERE id = %s", (randevu_id,))
     randevu = cursor.fetchone()
     
     if randevu:
         isim, email, hizmet, tarih, saat = randevu
-        cursor.execute("UPDATE randevular SET durum = 'İptal Edildi' WHERE id = ?", (randevu_id,))
+        cursor.execute("UPDATE randevular SET durum = 'İptal Edildi' WHERE id = %s", (randevu_id,))
         baglanti.commit()
         
         if email:
@@ -650,9 +639,9 @@ async def randevu_iptal(randevu_id: int, request: Request):
 async def tek_randevu_sil(randevu_id: int, request: Request):
     if request.cookies.get("admin_giris") != "aktif":
         return RedirectResponse(url="/admin", status_code=303)
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("DELETE FROM randevular WHERE id = ?", (randevu_id,))
+    cursor.execute("DELETE FROM randevular WHERE id = %s", (randevu_id,))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -663,9 +652,9 @@ async def tumunu_sil(request: Request):
         return RedirectResponse(url="/admin", status_code=303)
     
     aktif_berber_id = request.cookies.get("aktif_berber_id", "1")
-    baglanti = sqlite3.connect("berber.db")
+    baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("DELETE FROM randevular WHERE berber_id = ?", (aktif_berber_id,))
+    cursor.execute("DELETE FROM randevular WHERE berber_id = %s", (aktif_berber_id,))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)

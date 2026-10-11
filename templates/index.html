@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brothers Barber Shop | Randevu Sistemi</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Poppins', sans-serif; }
+        body { background-color: #121212; color: #e0e0e0; line-height: 1.6; }
+        header { background: rgba(18, 18, 18, 0.95); border-bottom: 1px solid #333; position: fixed; width: 100%; top: 0; z-index: 1000; display: flex; justify-content: space-between; align-items: center; padding: 15px 40px; }
+        .logo { font-size: 22px; font-weight: 700; color: #d4af37; text-transform: uppercase; letter-spacing: 1px; }
+        .admin-link { color: #fff; background: #222; border: 1px solid #444; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-size: 13px; font-weight: 500; transition: 0.3s; }
+        .admin-link:hover { background: #d4af37; color: #000; border-color: #d4af37; }
+        
+        .hero { height: 90vh; background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)), url('{{ ayar[1] }}') no-repeat center center/cover; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 0 20px; margin-top: 60px; }
+        .hero h1 { font-size: 48px; color: #d4af37; margin-bottom: 15px; font-weight: 700; text-transform: uppercase; }
+        .hero p { font-size: 18px; color: #ccc; margin-bottom: 30px; max-width: 600px; }
+        .btn-primary { background: #d4af37; color: #000; padding: 12px 30px; border-radius: 6px; font-weight: 600; text-decoration: none; text-transform: uppercase; transition: 0.3s; }
+        .btn-primary:hover { background: #c49b2c; }
+
+        .container { max-width: 1100px; margin: 60px auto; padding: 0 20px; }
+        .section-title { text-align: center; font-size: 30px; color: #d4af37; margin-bottom: 40px; text-transform: uppercase; font-weight: 600; }
+
+        .services-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 25px; margin-bottom: 60px; }
+        .service-card { background: #1a1a1a; border: 1px solid #333; padding: 30px; border-radius: 10px; text-align: center; transition: 0.3s; }
+        .service-card:hover { border-color: #d4af37; transform: translateY(-5px); }
+        .service-card h3 { font-size: 20px; color: #fff; margin-bottom: 10px; }
+        .service-card .price { font-size: 22px; color: #d4af37; font-weight: 700; margin-bottom: 15px; }
+        .service-card p { font-size: 14px; color: #aaa; }
+
+        .appointment-section { background: #1a1a1a; border: 1px solid #333; padding: 40px; border-radius: 12px; max-width: 700px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .alert { background: #2ecc71; color: #000; padding: 15px; border-radius: 6px; text-align: center; font-weight: 600; margin-bottom: 25px; }
+        .alert-error { background: #e74c3c; color: #fff; }
+        
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; font-size: 13px; color: #aaa; margin-bottom: 8px; font-weight: 500; }
+        .form-control { width: 100%; padding: 12px 15px; background: #252525; border: 1px solid #444; border-radius: 6px; color: #fff; font-size: 14px; outline: none; }
+        .form-control:focus { border-color: #d4af37; }
+        
+        .btn-submit { background: #d4af37; color: #000; width: 100%; padding: 14px; border: none; border-radius: 6px; font-weight: 700; font-size: 15px; cursor: pointer; text-transform: uppercase; transition: 0.3s; margin-top: 10px; }
+        .btn-submit:hover { background: #c49b2c; }
+
+        footer { text-align: center; padding: 30px; color: #666; font-size: 13px; border-top: 1px solid #333; margin-top: 60px; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">Brothers Barber Shop</div>
+        <a href="/admin" class="admin-link">Personel / Admin Girişi</a>
+    </header>
+
+    <section class="hero">
+        <h1>{ayar[0]}</h1>
+        <p>Modern kesimler, geleneksel ustura traşları ve size özel profesyonel bakım hizmetleri.</p>
+        <a href="#randevu" class="btn-primary">Hemen Randevu Al</a>
+    </section>
+
+    <div class="container">
+        <h2 class="section-title">Hizmetlerimiz ve Fiyatlar</h2>
+        <div class="services-grid">
+            {% for h in hizmet_listesi %}
+            <div class="service-card">
+                <h3>{h[0]}</h3>
+                <div class="price">{h[1]}</div>
+                <p>{h[2]}</p>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="appointment-section" id="randevu">
+            <h2 class="section-title" style="font-size: 24px; margin-bottom: 20px;">Online Randevu Oluştur</h2>
+            
+            {% if mesaj %}
+                <div class="alert {% if 'Hata' in mesaj %}alert-error{% endif %}">
+                    {{ mesaj }}
+                </div>
+            {% endif %}
+
+            <form action="/randevu-al" method="POST">
+                <div class="form-group">
+                    <label>Adınız Soyadınız:</label>
+                    <input type="text" name="isim" class="form-control" placeholder="Örn: Ahmet Yılmaz" required>
+                </div>
+                
+                <div class="form-group">
+                    <label>Telefon Numaranız:</label>
+                    <input type="tel" name="telefon" class="form-control" placeholder="Örn: 0555 444 33 22" required>
+                </div>
+
+                <div class="form-group">
+                    <label>E-Posta Adresiniz (Onay ve İptal mailleri için):</label>
+                    <input type="email" name="email" class="form-control" placeholder="ornek@mail.com">
+                </div>
+
+                <div class="form-group">
+                    <label>Hizmet Seçiniz:</label>
+                    <select name="hizmet" class="form-control" required>
+                        {% for h in hizmetler %}
+                        <option value="{{ h[0] }}">{{ h[0] }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Berber / Personel Seçiniz:</label>
+                    <select name="berber_id" class="form-control" required>
+                        {% for b in berberler %}
+                        <option value="{{ b[0] }}">#{{ b[0] }} - {{ b[1] }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Randevu Tarihi:</label>
+                    <input type="date" name="tarih" class="form-control" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Randevu Saati (Çalışma saatleri: 08:00 - 22:00):</label>
+                    <input type="time" name="saat" min="08:00" max="22:00" class="form-control" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Özel Notunuz (İsteğe bağlı):</label>
+                    <textarea name="notlar" class="form-control" rows="3" placeholder="Varsa özel istekleriniz..."></textarea>
+                </div>
+
+                <button type="submit" class="btn-submit">Randevuyu Onayla</button>
+            </form>
+        </div>
+    </div>
+
+    <footer>
+        &copy; 2026 Brothers Barber Shop. Tüm hakları saklıdır.
+    </footer>
+
+</body>
+</html>

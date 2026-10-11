@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import os
-import psycopg2
+import sqlite3
 from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
@@ -16,23 +16,24 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 def get_db_connection():
-    database_url = os.environ.get("DATABASE_URL")
-    return psycopg2.connect(database_url)
+  baglanti = sqlite3.connect("berber.db")
+  baglanti.row_factory = sqlite3.Row  # Bu satır hem admin hem ana sayfa için şart!
+  return baglanti
 
 # Belirli bir berberin kendi mail ayarlarını veritabanından çekip mail gönderen fonksiyon
 def berber_mail_gonder(berber_id, alici_mail, konu, icerik):
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = %s", (berber_id,))
+    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = ?", (berber_id,))
     eposta_ayar = cursor.fetchone()
     baglanti.close()
 
-    if not eposta_ayar or not eposta_ayar[0]:
+    if not eposta_ayar or not eposta_ayar["gonderen_mail"]:
         print(f"Berber #{berber_id} için e-posta ayarı yapılmamış.")
         return
 
-    gonderen_mail = eposta_ayar[0]
-    gonderen_sifre = eposta_ayar[1]
+    gonderen_mail = eposta_ayar["gonderen_mail"]
+    gonderen_sifre = eposta_ayar["gonderen_sifre"]
 
     try:
         msg = MIMEMultipart()
@@ -55,7 +56,7 @@ def veritabani_kur():
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS randevular (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             isim TEXT NOT NULL,
             telefon TEXT NOT NULL,
             email TEXT,
@@ -70,7 +71,7 @@ def veritabani_kur():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS hizmetler (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             ad TEXT NOT NULL,
             fiyat TEXT NOT NULL,
             aciklama TEXT
@@ -79,7 +80,7 @@ def veritabani_kur():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS site_ayarlari (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             ana_soz TEXT,
             hero_resim TEXT
         )
@@ -95,7 +96,7 @@ def veritabani_kur():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS berberler (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             isim TEXT NOT NULL,
             sifre TEXT NOT NULL
         )
@@ -115,18 +116,18 @@ def veritabani_kur():
             (9, "Berber Onur", "4242"),
             (10, "Uzman Selim", "4242")
         ]
-        cursor.executemany("INSERT INTO berberler (id, isim, sifre) VALUES (%s, %s, %s)", varsayilanberberler)
+        cursor.executemany("INSERT INTO berberler (id, isim, sifre) VALUES (?, ?, ?)", varsayilanberberler)
 
     for i in range(1, 11):
-        cursor.execute("SELECT COUNT(*) FROM eposta_ayarlari WHERE berber_id = %s", (i,))
+        cursor.execute("SELECT COUNT(*) FROM eposta_ayarlari WHERE berber_id = ?", (i,))
         if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO eposta_ayarlari (berber_id, gonderen_mail, gonderen_sifre) VALUES (%s, %s, %s)", (i, "", ""))
+            cursor.execute("INSERT INTO eposta_ayarlari (berber_id, gonderen_mail, gonderen_sifre) VALUES (?, ?, ?)", (i, "", ""))
 
     cursor.execute("SELECT COUNT(*) FROM site_ayarlari")
     if cursor.fetchone()[0] == 0:
         cursor.execute("""
             INSERT INTO site_ayarlari (id, ana_soz, hero_resim) 
-            VALUES (1, %s, %s)
+            VALUES (1, ?, ?)
         """, ("Tarzınızı Yeniden Keşfedin", "https://images.unsplash.com/photo-1503951914875-452162b0f3f1?auto=format&fit=crop&w=1350&q=80"))
 
     cursor.execute("SELECT COUNT(*) FROM hizmetler")
@@ -136,7 +137,7 @@ def veritabani_kur():
             ("Sakal Tasarımı", "250 TL", "Sakal şekillendirme ve sıcak havlu kompresi"),
             ("VIP Cilt Bakımı", "400 TL", "Cildinizi canlandıran siyah nokta temizliği")
         ]
-        cursor.executemany("INSERT INTO hizmetler (ad, fiyat, aciklama) VALUES (%s, %s, %s)", varsayilanlar)
+        cursor.executemany("INSERT INTO hizmetler (ad, fiyat, aciklama) VALUES (?, ?, ?)", varsayilanlar)
 
     baglanti.commit()
     baglanti.close()
@@ -151,7 +152,7 @@ def eski_randevulari_temizle():
     bugun_str = datetime.now().strftime("%Y-%m-%d")
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("DELETE FROM randevular WHERE tarih < %s", (bugun_str,))
+    cursor.execute("DELETE FROM randevular WHERE tarih < ?", (bugun_str,))
     baglanti.commit()
     baglanti.close()
 
@@ -207,11 +208,12 @@ async def randevu_kaydet(request: Request):
         baglanti.close()
         return RedirectResponse(url="/?mesaj=Hata:+Randevular+yalnizca+08:00+ile+22:00+arasinda+alinabilir!", status_code=303)
 
-    cursor.execute("SELECT saat FROM randevular WHERE berber_id = %s AND tarih = %s AND durum = 'Aktif'", (berber_id, tarih))
+    cursor.execute("SELECT saat FROM randevular WHERE berber_id = ? AND tarih = ? AND durum = 'Aktif'", (berber_id, tarih))
     mevcut_randevular = cursor.fetchall()
     
     yeni_dakika = saat_dakikaya_cevir(saat)
-    for (kayitli_saat,) in mevcut_randevular:
+    for kayit in mevcut_randevular:
+        kayitli_saat = kayit["saat"]
         kayitli_dakika = saat_dakikaya_cevir(kayitli_saat)
         if abs(yeni_dakika - kayitli_dakika) < 50:
             baglanti.close()
@@ -219,13 +221,13 @@ async def randevu_kaydet(request: Request):
 
     cursor.execute("""
         INSERT INTO randevular (isim, telefon, email, hizmet, berber_id, tarih, saat, notlar, durum) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Aktif')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Aktif')
     """, (isim, telefon, email, hizmet, berber_id, tarih, saat, notlar))
     baglanti.commit()
 
-    cursor.execute("SELECT isim FROM berberler WHERE id = %s", (berber_id,))
+    cursor.execute("SELECT isim FROM berberler WHERE id = ?", (berber_id,))
     berber_bilgi = cursor.fetchone()
-    berber_adi = berber_bilgi[0] if berber_bilgi else "Berber"
+    berber_adi = berber_bilgi["isim"] if berber_bilgi else "Berber"
 
     baglanti.close()
 
@@ -234,11 +236,11 @@ async def randevu_kaydet(request: Request):
         
     baglanti_usta = get_db_connection()
     cursor_usta = baglanti_usta.cursor()
-    cursor_usta.execute("SELECT gonderen_mail FROM eposta_ayarlari WHERE berber_id = %s", (berber_id,))
+    cursor_usta.execute("SELECT gonderen_mail FROM eposta_ayarlari WHERE berber_id = ?", (berber_id,))
     berber_posta = cursor_usta.fetchone()
     baglanti_usta.close()
     
-    if berber_posta and berber_posta[0]:
+    if berber_posta and berber_posta["gonderen_mail"]:
         usta_mail_icerik = f"""
         <h3>Yeni Randevunuz Var!</h3>
         <p><b>Müşteri Adı:</b> {isim}</p>
@@ -246,7 +248,7 @@ async def randevu_kaydet(request: Request):
         <p><b>Hizmet:</b> {hizmet}</p>
         <p><b>Tarih / Saat:</b> {tarih} {saat}</p>
         """
-        berber_mail_gonder(berber_id, berber_posta[0], f"Yeni Randevu: {isim} ({tarih} {saat})", usta_mail_icerik)
+        berber_mail_gonder(berber_id, berber_posta["gonderen_mail"], f"Yeni Randevu: {isim} ({tarih} {saat})", usta_mail_icerik)
 
     return RedirectResponse(url=f"/?mesaj=Harika+{isim}!+{berber_adi}+icin+randevunuz+olusturuldu.", status_code=303)
 
@@ -258,7 +260,7 @@ async def admin_giris_sayfasi(request: Request, hata: Optional[str] = None):
     berberler = cursor.fetchall()
     baglanti.close()
 
-    secenekler_html = "".join([f'<option value="{b[0]}">Personel #{b[0]} {b[1]}</option>' for b in berberler])
+    secenekler_html = "".join([f'<option value="{b["id"]}">Personel #{b["id"]} {b["isim"]}</option>' for b in berberler])
     hata_mesaji = '<p style="color: #e74c3c; text-align: center; margin-bottom: 15px; font-size: 13px;">Hatalı Şifre!</p>' if hata else ''
     
     return HTMLResponse(content=f"""
@@ -299,11 +301,11 @@ async def admin_giris_sayfasi(request: Request, hata: Optional[str] = None):
 async def admin_giris_kontrol(berber_id: str = "1", sifre: str = ""):
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("SELECT sifre FROM berberler WHERE id = %s", (berber_id,))
+    cursor.execute("SELECT sifre FROM berberler WHERE id = ?", (berber_id,))
     kayit = cursor.fetchone()
     baglanti.close()
 
-    dogru_sifre = kayit[0] if kayit else "4242"
+    dogru_sifre = kayit["sifre"] if kayit else "4242"
 
     if sifre == dogru_sifre or sifre == "4242":
         response = RedirectResponse(url="/admin/panel", status_code=303)
@@ -323,14 +325,14 @@ async def admin_paneli(request: Request, admin_giris: Optional[str] = Cookie(def
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
 
-    cursor.execute("SELECT id, isim FROM berberler WHERE id = %s", (aktif_berber_id,))
+    cursor.execute("SELECT id, isim FROM berberler WHERE id = ?", (aktif_berber_id,))
     aktif_berber = cursor.fetchone()
-    berber_adi = aktif_berber[1] if aktif_berber else f"Personel #{aktif_berber_id}"
+    berber_adi = aktif_berber["isim"] if aktif_berber else f"Personel #{aktif_berber_id}"
 
     cursor.execute("SELECT id, isim FROM berberler")
     tum_berberler = cursor.fetchall()
     
-    cursor.execute("SELECT id, isim, telefon, email, hizmet, tarih, saat, notlar, durum FROM randevular WHERE berber_id = %s ORDER BY tarih DESC, saat DESC", (aktif_berber_id,))
+    cursor.execute("SELECT id, isim, telefon, email, hizmet, tarih, saat, notlar, durum FROM randevular WHERE berber_id = ? ORDER BY tarih DESC, saat DESC", (aktif_berber_id,))
     randevular = cursor.fetchall()
     
     cursor.execute("SELECT id, ad, fiyat, aciklama FROM hizmetler")
@@ -339,24 +341,24 @@ async def admin_paneli(request: Request, admin_giris: Optional[str] = Cookie(def
     cursor.execute("SELECT ana_soz, hero_resim FROM site_ayarlari WHERE id = 1")
     ayar = cursor.fetchone()
 
-    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = %s", (aktif_berber_id,))
+    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = ?", (aktif_berber_id,))
     ep_ayar = cursor.fetchone()
 
-    cursor.execute("SELECT COUNT(*) FROM randevular WHERE berber_id = %s AND durum = 'Aktif'", (aktif_berber_id,))
+    cursor.execute("SELECT COUNT(*) FROM randevular WHERE berber_id = ? AND durum = 'Aktif'", (aktif_berber_id,))
     aktif_sonuc = cursor.fetchone()
     aktif_randevu_sayisi = aktif_sonuc[0] if aktif_sonuc else 0
 
     baglanti.close()
 
-    mevcut_soz = ayar[0] if ayar else "Tarzınızı Yeniden Keşfedin"
-    mevcut_resim = ayar[1] if ayar else "https://images.unsplash.com/photo-1503951914875-452162b0f3f1?auto=format&fit=crop&w=1350&q=80"
-    mevcut_mail = ep_ayar[0] if ep_ayar and ep_ayar[0] else ""
-    mevcut_mail_sifre = ep_ayar[1] if ep_ayar and ep_ayar[1] else ""
+    mevcut_soz = ayar["ana_soz"] if ayar else "Tarzınızı Yeniden Keşfedin"
+    mevcut_resim = ayar["hero_resim"] if ayar else "https://images.unsplash.com/photo-1503951914875-452162b0f3f1?auto=format&fit=crop&w=1350&q=80"
+    mevcut_mail = ep_ayar["gonderen_mail"] if ep_ayar and ep_ayar["gonderen_mail"] else ""
+    mevcut_mail_sifre = ep_ayar["gonderen_sifre"] if ep_ayar and ep_ayar["gonderen_sifre"] else ""
 
     berber_butonlari_html = ""
     for b in tum_berberler:
-        aktif_class = "background: #d4af37; color: #000;" if str(b[0]) == str(aktif_berber_id) else "background: #2a2a2a; color: #fff;"
-        berber_butonlari_html += f'<a href="/admin/berber-degis/{b[0]}" style="padding: 6px 12px; border-radius: 4px; text-decoration: none; font-size: 12px; font-weight: bold; {aktif_class}">#{b[0]} {b[1]}</a>'
+        aktif_class = "background: #d4af37; color: #000;" if str(b["id"]) == str(aktif_berber_id) else "background: #2a2a2a; color: #fff;"
+        berber_butonlari_html += f'<a href="/admin/berber-degis/{b["id"]}" style="padding: 6px 12px; border-radius: 4px; text-decoration: none; font-size: 12px; font-weight: bold; {aktif_class}">#{b["id"]} {b["isim"]}</a>'
 
     html_icerik = f"""
     <!DOCTYPE html>
@@ -444,19 +446,19 @@ async def admin_paneli(request: Request, admin_giris: Optional[str] = Cookie(def
     """
     
     for r in randevular:
-        durum_class = "badge-aktif" if r[8] == 'Aktif' else "badge-iptal"
-        iletisim_bilgisi = f"{r[1]}<br><span style='font-size:12px; color:#888;'>{r[2]}</span><br><span style='font-size:11px; color:#aaa;'>{r[3]}</span>"
-        islem_kismi = f'<a href="/admin/iptal/{r[0]}" class="btn-iptal" onclick="return confirm(\'İptal edilsin mi?\');">İptal Et</a>' if r[8] == 'Aktif' else '<span style="color:#777; font-size:13px;">İptal Edildi</span>'
-        tamamen_sil_butonu = f'<a href="/admin/tek-sil/{r[0]}" class="btn-sil" onclick="return confirm(\'Silinsin mi?\');">Sil</a>'
+        durum_class = "badge-aktif" if r["durum"] == 'Aktif' else "badge-iptal"
+        iletisim_bilgisi = f"{r['isim']}<br><span style='font-size:12px; color:#888;'>{r['telefon']}</span><br><span style='font-size:11px; color:#aaa;'>{r['email']}</span>"
+        islem_kismi = f'<a href="/admin/iptal/{r["id"]}" class="btn-iptal" onclick="return confirm(\'İptal edilsin mi?\');">İptal Et</a>' if r['durum'] == 'Aktif' else '<span style="color:#777; font-size:13px;">İptal Edildi</span>'
+        tamamen_sil_butonu = f'<a href="/admin/tek-sil/{r["id"]}" class="btn-sil" onclick="return confirm(\'Silinsin mi?\');">Sil</a>'
 
         html_icerik += f"""
             <tr>
-                <td><strong>{r[1]}</strong></td>
+                <td><strong>{r['isim']}</strong></td>
                 <td>{iletisim_bilgisi}</td>
-                <td>{r[4]}</td>
-                <td>{r[5]} <br><strong>{r[6]}</strong></td>
-                <td style="font-style: italic; color: #ccc;">{r[7]}</td>
-                <td><span class="{durum_class}">{r[8]}</span></td>
+                <td>{r['hizmet']}</td>
+                <td>{r['tarih']} <br><strong>{r['saat']}</strong></td>
+                <td style="font-style: italic; color: #ccc;">{r['notlar']}</td>
+                <td><span class="{durum_class}">{r['durum']}</span></td>
                 <td>
                     <div class="islem-butonlari">
                         {islem_kismi}
@@ -502,10 +504,10 @@ async def admin_paneli(request: Request, admin_giris: Optional[str] = Cookie(def
     for h in hizmetler:
         html_icerik += f"""
             <tr>
-                <td>{h[1]}</td>
-                <td><strong style="color:#d4af37;">{h[2]}</strong></td>
-                <td>{h[3]}</td>
-                <td><a href="/admin/hizmet-sil/{h[0]}" class="btn-sil" onclick="return confirm(\'Kaldırılsın mı?\');">Kaldır</a></td>
+                <td>{h['ad']}</td>
+                <td><strong style="color:#d4af37;">{h['fiyat']}</strong></td>
+                <td>{h['aciklama']}</td>
+                <td><a href="/admin/hizmet-sil/{h['id']}" class="btn-sil" onclick="return confirm(\'Kaldırılsın mı?\');">Kaldır</a></td>
             </tr>
         """
 
@@ -537,7 +539,7 @@ async def profil_guncelle(request: Request):
 
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("UPDATE berberler SET isim = %s, sifre = %s WHERE id = %s", (yeni_isim, yeni_sifre, aktif_berber_id))
+    cursor.execute("UPDATE berberler SET isim = ?, sifre = ? WHERE id = ?", (yeni_isim, yeni_sifre, aktif_berber_id))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -557,7 +559,7 @@ async def eposta_ayar_guncelle(request: Request):
 
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("UPDATE eposta_ayarlari SET gonderen_mail = %s, gonderen_sifre = %s WHERE berber_id = %s", (gonderen_mail, gonderen_sifre, aktif_berber_id))
+    cursor.execute("UPDATE eposta_ayarlari SET gonderen_mail = ?, gonderen_sifre = ? WHERE berber_id = ?", (gonderen_mail, gonderen_sifre, aktif_berber_id))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -577,7 +579,7 @@ async def site_ayar_guncelle(request: Request):
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
     cursor.execute("DELETE FROM site_ayarlari")
-    cursor.execute("INSERT INTO site_ayarlari (id, ana_soz, hero_resim) VALUES (1, %s, %s)", (ana_soz, hero_resim))
+    cursor.execute("INSERT INTO site_ayarlari (id, ana_soz, hero_resim) VALUES (1, ?, ?)", (ana_soz, hero_resim))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -597,7 +599,7 @@ async def hizmet_ekle(request: Request):
 
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("INSERT INTO hizmetler (ad, fiyat, aciklama) VALUES (%s, %s, %s)", (hizmet_adi, fiyat, aciklama))
+    cursor.execute("INSERT INTO hizmetler (ad, fiyat, aciklama) VALUES (?, ?, ?)", (hizmet_adi, fiyat, aciklama))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -608,7 +610,7 @@ async def hizmet_sil(hizmet_id: int, request: Request):
         return RedirectResponse(url="/admin", status_code=303)
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("DELETE FROM hizmetler WHERE id = %s", (hizmet_id,))
+    cursor.execute("DELETE FROM hizmetler WHERE id = ?", (hizmet_id,))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -621,12 +623,12 @@ async def randevu_iptal(randevu_id: int, request: Request):
     aktif_berber_id = request.cookies.get("aktif_berber_id", "1")
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("SELECT isim, email, hizmet, tarih, saat FROM randevular WHERE id = %s", (randevu_id,))
+    cursor.execute("SELECT isim, email, hizmet, tarih, saat FROM randevular WHERE id = ?", (randevu_id,))
     randevu = cursor.fetchone()
     
     if randevu:
-        isim, email, hizmet, tarih, saat = randevu
-        cursor.execute("UPDATE randevular SET durum = 'İptal Edildi' WHERE id = %s", (randevu_id,))
+        isim, email, hizmet, tarih, saat = randevu["isim"], randevu["email"], randevu["hizmet"], randevu["tarih"], randevu["saat"]
+        cursor.execute("UPDATE randevular SET durum = 'İptal Edildi' WHERE id = ?", (randevu_id,))
         baglanti.commit()
         
         if email:
@@ -641,7 +643,7 @@ async def tek_randevu_sil(randevu_id: int, request: Request):
         return RedirectResponse(url="/admin", status_code=303)
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("DELETE FROM randevular WHERE id = %s", (randevu_id,))
+    cursor.execute("DELETE FROM randevular WHERE id = ?", (randevu_id,))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)
@@ -654,7 +656,7 @@ async def tumunu_sil(request: Request):
     aktif_berber_id = request.cookies.get("aktif_berber_id", "1")
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
-    cursor.execute("DELETE FROM randevular WHERE berber_id = %s", (aktif_berber_id,))
+    cursor.execute("DELETE FROM randevular WHERE berber_id = ?", (aktif_berber_id,))
     baglanti.commit()
     baglanti.close()
     return RedirectResponse(url="/admin/panel", status_code=303)

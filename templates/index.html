@@ -52,7 +52,7 @@
     </header>
 
     <section class="hero">
-        <h1>{ayar[0]}</h1>
+        <h1>{{ ayar[0] }}</h1>
         <p>Modern kesimler, geleneksel ustura traşları ve size özel profesyonel bakım hizmetleri.</p>
         <a href="#randevu" class="btn-primary">Hemen Randevu Al</a>
     </section>
@@ -62,9 +62,9 @@
         <div class="services-grid">
             {% for h in hizmet_listesi %}
             <div class="service-card">
-                <h3>{h[0]}</h3>
-                <div class="price">{h[1]}</div>
-                <p>{h[2]}</p>
+                <h3>{{ h[0] }}</h3>
+                <div class="price">{{ h[1] }}</div>
+                <p>{{ h[2] }}</p>
             </div>
             {% endfor %}
         </div>

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Response, Cookie
+from fastapi import FastAPI, Request, Response, Cookie, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -22,18 +22,22 @@ def get_db_connection():
     return psycopg2.connect(DB_URL)
 
 def berber_mail_gonder(berber_id, alici_mail, konu, icerik):
-    baglanti = get_db_connection()
-    cursor = baglanti.cursor()
-    cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = %s", (berber_id,))
-    eposta_ayar = cursor.fetchone()
-    baglanti.close()
+    try:
+        baglanti = get_db_connection()
+        cursor = baglanti.cursor()
+        cursor.execute("SELECT gonderen_mail, gonderen_sifre FROM eposta_ayarlari WHERE berber_id = %s", (berber_id,))
+        eposta_ayar = cursor.fetchone()
+        baglanti.close()
+    except Exception as e:
+        print(f"[MAIL] Veritabani hatasi: {e}")
+        return False
 
-    if not eposta_ayar or not eposta_ayar[0]:
-        print(f"Berber #{berber_id} için e-posta ayarı yapılmamış.")
-        return
+    if not eposta_ayar or not eposta_ayar[0] or not eposta_ayar[1]:
+        print(f"[MAIL] Berber #{berber_id} icin e-posta ayari eksik, mail gonderilmedi -> {alici_mail}")
+        return False
 
-    gonderen_mail = eposta_ayar[0]
-    gonderen_sifre = eposta_ayar[1]
+    gonderen_mail = eposta_ayar[0].strip()
+    gonderen_sifre = eposta_ayar[1].replace(" ", "")
 
     try:
         msg = MIMEMultipart()
@@ -42,14 +46,15 @@ def berber_mail_gonder(berber_id, alici_mail, konu, icerik):
         msg['Subject'] = konu
         msg.attach(MIMEText(icerik, 'html', 'utf-8'))
 
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(gonderen_mail, gonderen_sifre)
-        server.sendmail(gonderen_mail, alici_mail, msg.as_string())
-        server.quit()
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
+            server.starttls()
+            server.login(gonderen_mail, gonderen_sifre)
+            server.sendmail(gonderen_mail, alici_mail, msg.as_string())
+        print(f"[MAIL] Gonderildi: {gonderen_mail} -> {alici_mail}")
+        return True
     except Exception as e:
-        print("Mail Gönderilemedi:", e)
-
+        print(f"[MAIL] HATA ({alici_mail}): {type(e).__name__}: {e}")
+        return False
 def veritabani_kur():
     baglanti = get_db_connection()
     cursor = baglanti.cursor()
@@ -178,7 +183,7 @@ async def ana_sayfa(request: Request, mesaj: Optional[str] = None):
     })
 
 @app.post("/randevu-al", response_class=HTMLResponse)
-async def randevu_kaydet(request: Request):
+async def randevu_kaydet(request: Request, background_tasks: BackgroundTasks):
     try:
         form = await request.form()
         isim = str(form.get("isim", ""))
@@ -201,7 +206,7 @@ async def randevu_kaydet(request: Request):
 
     cursor.execute("SELECT saat FROM randevular WHERE berber_id = %s AND tarih = %s AND durum = 'Aktif'", (berber_id, tarih))
     mevcut_randevular = cursor.fetchall()
-    
+
     yeni_dakika = saat_dakikaya_cevir(saat)
     for (kayitli_saat,) in mevcut_randevular:
         kayitli_dakika = saat_dakikaya_cevir(kayitli_saat)
@@ -222,14 +227,17 @@ async def randevu_kaydet(request: Request):
     baglanti.close()
 
     if email:
-        berber_mail_gonder(berber_id, email, "Randevu Onayı - Brothers Barber", f"Merhaba {isim},<br>{tarih} saat {saat} için <b>{berber_adi}</b> eşliğinde <b>{hizmet}</b> randevunuz oluşturulmuştur.")
-        
+        background_tasks.add_task(
+            berber_mail_gonder, berber_id, email, "Randevu Onayı - Brothers Barber",
+            f"Merhaba {isim},<br>{tarih} saat {saat} için <b>{berber_adi}</b> eşliğinde <b>{hizmet}</b> randevunuz oluşturulmuştur."
+        )
+
     baglanti_usta = get_db_connection()
     cursor_usta = baglanti_usta.cursor()
     cursor_usta.execute("SELECT gonderen_mail FROM eposta_ayarlari WHERE berber_id = %s", (berber_id,))
     berber_posta = cursor_usta.fetchone()
     baglanti_usta.close()
-    
+
     if berber_posta and berber_posta[0]:
         usta_mail_icerik = f"""
         <h3>Yeni Randevunuz Var!</h3>
@@ -238,10 +246,12 @@ async def randevu_kaydet(request: Request):
         <p><b>Hizmet:</b> {hizmet}</p>
         <p><b>Tarih / Saat:</b> {tarih} {saat}</p>
         """
-        berber_mail_gonder(berber_id, berber_posta[0], f"Yeni Randevu: {isim} ({tarih} {saat})", usta_mail_icerik)
+        background_tasks.add_task(
+            berber_mail_gonder, berber_id, berber_posta[0],
+            f"Yeni Randevu: {isim} ({tarih} {saat})", usta_mail_icerik
+        )
 
     return RedirectResponse(url=f"/?mesaj=Harika+{isim}!+{berber_adi}+icin+randevunuz+olusturuldu.", status_code=303)
-
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_giris_sayfasi(request: Request, hata: Optional[str] = None):
     baglanti = get_db_connection()
